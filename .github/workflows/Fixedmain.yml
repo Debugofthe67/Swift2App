@@ -85,21 +85,18 @@ jobs:
           echo "SDK_PATH=$SDK_PATH" >> $GITHUB_ENV
 
       - name: Process Inline Swift Code Input
+        env:
+          SWIFT_CODE_INPUT: ${{ inputs.swift_code }}
         run: |
-          INLINE_CODE="${{ inputs.swift_code }}"
-          if [ -n "$INLINE_CODE" ]; then
+          if [ -n "$SWIFT_CODE_INPUT" ]; then
             echo "Inline Swift code provided. Writing to build/InlineMain.swift..."
-            cat << 'EOF' > build/InlineMain.swift
-${{ inputs.swift_code }}
-EOF
+            printf "%s\n" "$SWIFT_CODE_INPUT" > build/InlineMain.swift
           fi
 
       - name: Compile Swift Binary
         run: |
-          # Discover repo swift files and exclude build folder
           SWIFT_FILES=$(find . -name "*.swift" -not -path "./build/*")
           
-          # Include inline code if generated
           if [ -f "build/InlineMain.swift" ]; then
             SWIFT_FILES="$SWIFT_FILES build/InlineMain.swift"
           fi
@@ -137,7 +134,6 @@ EOF
               "build/${{ inputs.app_name }}_arm64" \
               "build/${{ inputs.app_name }}_arm64e"
           else
-            # Single Architecture Build (arm64 or arm64e)
             swiftc -sdk "$SDK_PATH" \
               -target "${ARCH_CHOICE}-apple-ios${IOS_VER}" \
               -parse-as-library \
