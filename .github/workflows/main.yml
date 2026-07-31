@@ -15,6 +15,14 @@ on:
         description: 'App Version (e.g., 1.0.0)'
         required: true
         default: '1.0.0'
+      target_ios_version:
+        description: 'Target Minimum iOS Version (e.g., 16.0, 17.0, 18.0, 26.0, 27.0)'
+        required: true
+        default: '16.0'
+      enable_arm64e:
+        description: 'Include arm64e Slice (Pointer Authentication / A12+ Chips)'
+        type: boolean
+        default: false
       icon_url:
         description: 'App Icon URL (PNG format, optional)'
         required: false
@@ -52,7 +60,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-latest
 
     steps:
       - name: Checkout Code
@@ -76,11 +84,19 @@ jobs:
             exit 1
           fi
 
-          echo "Compiling Swift files:"
+          IOS_VER="${{ inputs.target_ios_version }}"
+          TARGET_ARGS=("-target" "arm64-apple-ios${IOS_VER}")
+
+          if [ "${{ inputs.enable_arm64e }}" = "true" ]; then
+            echo "Enabling arm64e architecture support..."
+            TARGET_ARGS+=("-target" "arm64e-apple-ios${IOS_VER}")
+          fi
+
+          echo "Compiling Swift files for iOS ${IOS_VER}:"
           echo "$SWIFT_FILES"
 
           swiftc -sdk "$SDK_PATH" \
-            -target arm64-apple-ios15.0 \
+            "${TARGET_ARGS[@]}" \
             -parse-as-library \
             -emit-executable \
             -o "build/${{ inputs.app_name }}" \
@@ -130,7 +146,7 @@ jobs:
               <key>LSRequiresIPhoneOS</key>
               <true/>
               <key>MinimumOSVersion</key>
-              <string>15.0</string>
+              <string>${{ inputs.target_ios_version }}</string>
               <key>UIRequiresFullScreen</key>
               <false/>
               <key>UIApplicationSceneManifest</key>
