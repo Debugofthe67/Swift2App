@@ -16,13 +16,22 @@ on:
         required: true
         default: '1.0.0'
       target_ios_version:
-        description: 'Target Minimum iOS Version (e.g., 16.0, 17.0, 18.0, 26.0, 27.0)'
+        description: 'Minimum iOS Version (Supported: 14.0 to 27.0+)'
         required: true
         default: '16.0'
-      enable_arm64e:
-        description: 'Include arm64e Slice (Pointer Authentication / A12+ Chips)'
-        type: boolean
-        default: false
+      arch_target:
+        description: 'Target Architecture'
+        type: choice
+        options:
+          - 'arm64'
+          - 'arm64e'
+          - 'both (arm64 + arm64e)'
+        default: 'arm64'
+      swift_code:
+        description: 'Inline Swift Code (Optional - leave blank if using repository .swift files)'
+        required: false
+        type: string
+        default: ''
       icon_url:
         description: 'App Icon URL (PNG format, optional)'
         required: false
@@ -75,32 +84,67 @@ jobs:
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "SDK_PATH=$SDK_PATH" >> $GITHUB_ENV
 
-      - name: Compile Swift Files
+      - name: Process Inline Swift Code Input
         run: |
+          INLINE_CODE="${{ inputs.swift_code }}"
+          if [ -n "$INLINE_CODE" ]; then
+            echo "Inline Swift code provided. Writing to build/InlineMain.swift..."
+            cat << 'EOF' > build/InlineMain.swift
+${{ inputs.swift_code }}
+EOF
+          fi
+
+      - name: Compile Swift Binary
+        run: |
+          # Discover repo swift files and exclude build folder
           SWIFT_FILES=$(find . -name "*.swift" -not -path "./build/*")
           
+          # Include inline code if generated
+          if [ -f "build/InlineMain.swift" ]; then
+            SWIFT_FILES="$SWIFT_FILES build/InlineMain.swift"
+          fi
+
           if [ -z "$SWIFT_FILES" ]; then
-            echo "Error: No .swift files found in repository."
+            echo "Error: No Swift source files found in repo or provided via input."
             exit 1
           fi
 
           IOS_VER="${{ inputs.target_ios_version }}"
-          TARGET_ARGS=("-target" "arm64-apple-ios${IOS_VER}")
+          ARCH_CHOICE="${{ inputs.arch_target }}"
+          
+          echo "Compiling for Minimum iOS Target: $IOS_VER"
+          echo "Architecture Selected: $ARCH_CHOICE"
 
-          if [ "${{ inputs.enable_arm64e }}" = "true" ]; then
-            echo "Enabling arm64e architecture support..."
-            TARGET_ARGS+=("-target" "arm64e-apple-ios${IOS_VER}")
+          if [ "$ARCH_CHOICE" = "both (arm64 + arm64e)" ]; then
+            echo "Building arm64 slice..."
+            swiftc -sdk "$SDK_PATH" \
+              -target "arm64-apple-ios${IOS_VER}" \
+              -parse-as-library \
+              -emit-executable \
+              -o "build/${{ inputs.app_name }}_arm64" \
+              $SWIFT_FILES
+
+            echo "Building arm64e slice..."
+            swiftc -sdk "$SDK_PATH" \
+              -target "arm64e-apple-ios${IOS_VER}" \
+              -parse-as-library \
+              -emit-executable \
+              -o "build/${{ inputs.app_name }}_arm64e" \
+              $SWIFT_FILES
+
+            echo "Combining architecture slices into universal fat binary..."
+            lipo -create -output "build/${{ inputs.app_name }}" \
+              "build/${{ inputs.app_name }}_arm64" \
+              "build/${{ inputs.app_name }}_arm64e"
+          else
+            # Single Architecture Build (arm64 or arm64e)
+            swiftc -sdk "$SDK_PATH" \
+              -target "${ARCH_CHOICE}-apple-ios${IOS_VER}" \
+              -parse-as-library \
+              -emit-executable \
+              -o "build/${{ inputs.app_name }}" \
+              $SWIFT_FILES
           fi
-
-          echo "Compiling Swift files for iOS ${IOS_VER}:"
-          echo "$SWIFT_FILES"
-
-          swiftc -sdk "$SDK_PATH" \
-            "${TARGET_ARGS[@]}" \
-            -parse-as-library \
-            -emit-executable \
-            -o "build/${{ inputs.app_name }}" \
-            $SWIFT_FILES
 
       - name: Process App Icon
         run: |
