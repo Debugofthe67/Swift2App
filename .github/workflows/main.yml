@@ -28,7 +28,7 @@ on:
           - 'both (arm64 + arm64e)'
         default: 'arm64'
       swift_code:
-        description: 'Inline Swift Code (Optional - leave blank if using repository .swift files)'
+        description: 'Inline Swift Code (Optional - leave blank to use repository .swift files)'
         required: false
         type: string
         default: ''
@@ -88,29 +88,38 @@ jobs:
         env:
           SWIFT_CODE_INPUT: ${{ inputs.swift_code }}
         run: |
-          if [ -n "$SWIFT_CODE_INPUT" ]; then
+          # Strip leading/trailing whitespaces to check if true content exists
+          TRIMMED_CODE=$(echo "$SWIFT_CODE_INPUT" | xargs)
+
+          if [ -n "$TRIMMED_CODE" ]; then
             echo "Inline Swift code provided. Writing to build/InlineMain.swift..."
             printf "%s\n" "$SWIFT_CODE_INPUT" > build/InlineMain.swift
+          else
+            echo "No inline Swift code provided. Defaulting to repository .swift files."
           fi
 
       - name: Compile Swift Binary
         run: |
+          # Discover all repository swift files, excluding build directory
           SWIFT_FILES=$(find . -name "*.swift" -not -path "./build/*")
-          
+
+          # Include inline file if generated
           if [ -f "build/InlineMain.swift" ]; then
             SWIFT_FILES="$SWIFT_FILES build/InlineMain.swift"
           fi
 
           if [ -z "$SWIFT_FILES" ]; then
-            echo "Error: No Swift source files found in repo or provided via input."
+            echo "Error: No .swift files found in root/subdirectories and no inline code provided."
             exit 1
           fi
 
           IOS_VER="${{ inputs.target_ios_version }}"
           ARCH_CHOICE="${{ inputs.arch_target }}"
           
-          echo "Compiling for Minimum iOS Target: $IOS_VER"
-          echo "Architecture Selected: $ARCH_CHOICE"
+          echo "Compiling Swift files:"
+          echo "$SWIFT_FILES"
+          echo "Target iOS Version: $IOS_VER"
+          echo "Architecture Target: $ARCH_CHOICE"
 
           if [ "$ARCH_CHOICE" = "both (arm64 + arm64e)" ]; then
             echo "Building arm64 slice..."
@@ -129,7 +138,7 @@ jobs:
               -o "build/${{ inputs.app_name }}_arm64e" \
               $SWIFT_FILES
 
-            echo "Combining architecture slices into universal fat binary..."
+            echo "Combining slices into universal binary..."
             lipo -create -output "build/${{ inputs.app_name }}" \
               "build/${{ inputs.app_name }}_arm64" \
               "build/${{ inputs.app_name }}_arm64e"
