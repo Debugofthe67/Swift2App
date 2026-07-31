@@ -1,0 +1,301 @@
+name: Swift2App
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'App Name'
+        required: true
+        default: 'MySwiftApp'
+      bundle_id:
+        description: 'Bundle Identifier (e.g., com.example.myapp)'
+        required: true
+        default: 'com.example.myapp'
+      app_version:
+        description: 'App Version (e.g., 1.0.0)'
+        required: true
+        default: '1.0.0'
+      target_ios_version:
+        description: 'Minimum iOS Version (Supported: 14.0 to 27.0+)'
+        required: true
+        default: '16.0'
+      arch_target:
+        description: 'Target Architecture'
+        type: choice
+        options:
+          - 'arm64'
+          - 'arm64e'
+          - 'both (arm64 + arm64e)'
+        default: 'arm64'
+      swift_code:
+        description: 'Inline Swift Code (Optional - leave blank if using repository .swift files)'
+        required: false
+        type: string
+        default: ''
+      icon_url:
+        description: 'App Icon URL (PNG format, optional)'
+        required: false
+        default: ''
+
+      # --- PERMISSION & ENTITLEMENT TOGGLES ---
+      entitlement_jit:
+        description: 'Enable JIT / Dynamic Codesigning (TrollStore / Debug)'
+        type: boolean
+        default: false
+      entitlement_increased_memory:
+        description: 'Enable Extended Memory Limit'
+        type: boolean
+        default: false
+      perm_camera:
+        description: 'Include Camera Permission'
+        type: boolean
+        default: false
+      perm_photos:
+        description: 'Include Photo Library Permission'
+        type: boolean
+        default: false
+      perm_microphone:
+        description: 'Include Microphone Permission'
+        type: boolean
+        default: false
+      perm_location:
+        description: 'Include Location Access Permission'
+        type: boolean
+        default: false
+      perm_local_network:
+        description: 'Include Local Network Access Permission'
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Build Directory
+        run: |
+          mkdir -p build Payload
+
+      - name: Locate Target SDK
+        run: |
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK_PATH=$SDK_PATH" >> $GITHUB_ENV
+
+      - name: Process Inline Swift Code Input
+        run: |
+          INLINE_CODE="${{ inputs.swift_code }}"
+          if [ -n "$INLINE_CODE" ]; then
+            echo "Inline Swift code provided. Writing to build/InlineMain.swift..."
+            cat << 'EOF' > build/InlineMain.swift
+${{ inputs.swift_code }}
+EOF
+          fi
+
+      - name: Compile Swift Binary
+        run: |
+          # Discover repo swift files and exclude build folder
+          SWIFT_FILES=$(find . -name "*.swift" -not -path "./build/*")
+          
+          # Include inline code if generated
+          if [ -f "build/InlineMain.swift" ]; then
+            SWIFT_FILES="$SWIFT_FILES build/InlineMain.swift"
+          fi
+
+          if [ -z "$SWIFT_FILES" ]; then
+            echo "Error: No Swift source files found in repo or provided via input."
+            exit 1
+          fi
+
+          IOS_VER="${{ inputs.target_ios_version }}"
+          ARCH_CHOICE="${{ inputs.arch_target }}"
+          
+          echo "Compiling for Minimum iOS Target: $IOS_VER"
+          echo "Architecture Selected: $ARCH_CHOICE"
+
+          if [ "$ARCH_CHOICE" = "both (arm64 + arm64e)" ]; then
+            echo "Building arm64 slice..."
+            swiftc -sdk "$SDK_PATH" \
+              -target "arm64-apple-ios${IOS_VER}" \
+              -parse-as-library \
+              -emit-executable \
+              -o "build/${{ inputs.app_name }}_arm64" \
+              $SWIFT_FILES
+
+            echo "Building arm64e slice..."
+            swiftc -sdk "$SDK_PATH" \
+              -target "arm64e-apple-ios${IOS_VER}" \
+              -parse-as-library \
+              -emit-executable \
+              -o "build/${{ inputs.app_name }}_arm64e" \
+              $SWIFT_FILES
+
+            echo "Combining architecture slices into universal fat binary..."
+            lipo -create -output "build/${{ inputs.app_name }}" \
+              "build/${{ inputs.app_name }}_arm64" \
+              "build/${{ inputs.app_name }}_arm64e"
+          else
+            # Single Architecture Build (arm64 or arm64e)
+            swiftc -sdk "$SDK_PATH" \
+              -target "${ARCH_CHOICE}-apple-ios${IOS_VER}" \
+              -parse-as-library \
+              -emit-executable \
+              -o "build/${{ inputs.app_name }}" \
+              $SWIFT_FILES
+          fi
+
+      - name: Process App Icon
+        run: |
+          if [ -n "${{ inputs.icon_url }}" ]; then
+            echo "Downloading app icon from ${{ inputs.icon_url }}..."
+            curl -sSL "${{ inputs.icon_url }}" -o build/icon.png
+            
+            if file build/icon.png | grep -qE 'Image|PNG|JPEG'; then
+              echo "Generating standard iOS icon sizes..."
+              sips -z 120 120 build/icon.png --out build/AppIcon60x60@2x.png
+              sips -z 180 180 build/icon.png --out build/AppIcon60x60@3x.png
+              sips -z 152 152 build/icon.png --out build/AppIcon76x76@2x.png
+              sips -z 167 167 build/icon.png --out build/AppIcon83.5x83.5@2x.png
+              sips -z 1024 1024 build/icon.png --out build/iTunesArtwork@2x.png
+            fi
+          fi
+
+      - name: Generate Custom Info.plist
+        run: |
+          cat <<EOF > build/Info.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDevelopmentRegion</key>
+              <string>en</string>
+              <key>CFBundleExecutable</key>
+              <string>${{ inputs.app_name }}</string>
+              <key>CFBundleIdentifier</key>
+              <string>${{ inputs.bundle_id }}</string>
+              <key>CFBundleInfoDictionaryVersion</key>
+              <string>6.0</string>
+              <key>CFBundleName</key>
+              <string>${{ inputs.app_name }}</string>
+              <key>CFBundleDisplayName</key>
+              <string>${{ inputs.app_name }}</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${{ inputs.app_version }}</string>
+              <key>CFBundleVersion</key>
+              <string>1</string>
+              <key>LSRequiresIPhoneOS</key>
+              <true/>
+              <key>MinimumOSVersion</key>
+              <string>${{ inputs.target_ios_version }}</string>
+              <key>UIRequiresFullScreen</key>
+              <false/>
+              <key>UIApplicationSceneManifest</key>
+              <dict>
+                  <key>UIApplicationSupportsMultipleScenes</key>
+                  <true/>
+              </dict>
+              <key>UIRequiredDeviceCapabilities</key>
+              <array>
+                  <string>arm64</string>
+              </array>
+              <key>UISupportedInterfaceOrientations</key>
+              <array>
+                  <string>UIInterfaceOrientationPortrait</string>
+                  <string>UIInterfaceOrientationLandscapeLeft</string>
+                  <string>UIInterfaceOrientationLandscapeRight</string>
+              </array>
+              <key>CFBundleIcons</key>
+              <dict>
+                  <key>CFBundlePrimaryIcon</key>
+                  <dict>
+                      <key>CFBundleIconFiles</key>
+                      <array>
+                          <string>AppIcon60x60</string>
+                      </array>
+                      <key>CFBundleIconName</key>
+                      <string>AppIcon</string>
+                  </dict>
+              </dict>
+          EOF
+
+          PLIST="build/Info.plist"
+
+          if [ "${{ inputs.perm_camera }}" = "true" ]; then
+            /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'This app requires access to the camera.'" "$PLIST"
+          fi
+
+          if [ "${{ inputs.perm_photos }}" = "true" ]; then
+            /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string 'This app requires access to the photo library.'" "$PLIST"
+          fi
+
+          if [ "${{ inputs.perm_microphone }}" = "true" ]; then
+            /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string 'This app requires access to the microphone.'" "$PLIST"
+          fi
+
+          if [ "${{ inputs.perm_location }}" = "true" ]; then
+            /usr/libexec/PlistBuddy -c "Add :NSLocationWhenInUseUsageDescription string 'This app requires access to your location.'" "$PLIST"
+          fi
+
+          if [ "${{ inputs.perm_local_network }}" = "true" ]; then
+            /usr/libexec/PlistBuddy -c "Add :NSLocalNetworkUsageDescription string 'This app requires local network discovery.'" "$PLIST"
+          fi
+
+          cat <<EOF >> build/Info.plist
+          </dict>
+          </plist>
+          EOF
+
+      - name: Generate Entitlements.plist
+        run: |
+          cat <<EOF > build/Entitlements.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>get-task-allow</key>
+              <true/>
+          EOF
+
+          ENT="build/Entitlements.plist"
+
+          if [ "${{ inputs.entitlement_jit }}" = "true" ]; then
+            /usr/libexec/PlistBuddy -c "Add :dynamic-codesigning bool true" "$ENT"
+          fi
+
+          if [ "${{ inputs.entitlement_increased_memory }}" = "true" ]; then
+            /usr/libexec/PlistBuddy -c "Add :com.apple.developer.kernel.increased-memory-limit bool true" "$ENT"
+          fi
+
+          cat <<EOF >> build/Entitlements.plist
+          </dict>
+          </plist>
+          EOF
+
+      - name: Create .app Bundle & Apply Ad-Hoc Signature
+        run: |
+          APP_BUNDLE="Payload/${{ inputs.app_name }}.app"
+          mkdir -p "$APP_BUNDLE"
+
+          cp "build/${{ inputs.app_name }}" "$APP_BUNDLE/"
+          cp "build/Info.plist" "$APP_BUNDLE/"
+
+          if [ -f "build/AppIcon60x60@2x.png" ]; then
+            cp build/AppIcon*.png "$APP_BUNDLE/" 2>/dev/null || true
+            cp build/iTunesArtwork@2x.png "$APP_BUNDLE/" 2>/dev/null || true
+          fi
+
+          codesign -s - --force --deep --entitlements build/Entitlements.plist "$APP_BUNDLE"
+
+      - name: Package into .ipa
+        run: |
+          zip -r "${{ inputs.app_name }}.ipa" Payload
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.app_name }}-IPA
+          path: ${{ inputs.app_name }}.ipa
